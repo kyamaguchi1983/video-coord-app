@@ -20,7 +20,7 @@ export default function App() {
   const [videoURL, setVideoURL] = useState(null);
   const [points, setPoints] = useState([]);
   const [captured, setCaptured] = useState(false);
-  const [videoDims, setVideoDims] = useState({ w: 640, h: 360 });
+  const [videoDims, setVideoDims] = useState({ w: 1920, h: 1080 });
   const [frameTime, setFrameTime] = useState(null);
   const [fps, setFps] = useState(30);
   const [distanceHistory, setDistanceHistory] = useState([]);
@@ -31,6 +31,25 @@ export default function App() {
   const [scalePoints, setScalePoints] = useState([]);
   const [scaleInput, setScaleInput] = useState("");
   const [isSettingScale, setIsSettingScale] = useState(false);
+
+  // 表示上の幅を取得（レスポンシブ用）
+  const [displayW, setDisplayW] = useState(1920);
+  const [displayH, setDisplayH] = useState(1080);
+
+  // 表示サイズをウィンドウ幅に合わせて更新
+  const updateDisplaySize = () => {
+    if (!containerRef.current) return;
+    const w = containerRef.current.offsetWidth;
+    const aspect = videoDims.w / videoDims.h;
+    setDisplayW(w);
+    setDisplayH(Math.round(w / aspect));
+  };
+
+  useEffect(() => {
+    updateDisplaySize();
+    window.addEventListener("resize", updateDisplaySize);
+    return () => window.removeEventListener("resize", updateDisplaySize);
+  }, [videoDims.w, videoDims.h]);
 
   const handleUpload = e => {
     setVideoURL(URL.createObjectURL(e.target.files[0]));
@@ -46,6 +65,7 @@ export default function App() {
     const video = videoRef.current;
     if (video?.videoWidth && video?.videoHeight) {
       setVideoDims({ w: video.videoWidth, h: video.videoHeight });
+      setTimeout(updateDisplaySize, 200);
     }
   };
 
@@ -77,8 +97,14 @@ export default function App() {
   const handleCanvasClick = e => {
     if (!captured) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // 表示上の座標
+    const dispX = e.clientX - rect.left;
+    const dispY = e.clientY - rect.top;
+    // 表示サイズ→実ピクセルに換算
+    const scaleX = videoDims.w / displayW;
+    const scaleY = videoDims.h / displayH;
+    const x = dispX * scaleX;
+    const y = dispY * scaleY;
 
     if (isSettingScale) {
       if (scalePoints.length < 2) {
@@ -112,7 +138,7 @@ export default function App() {
     setAngleHistory(history => history.filter((_, i) => i !== idx));
   };
 
-  // マーカーを小さく（半径4pxに変更済み）
+  // 描画（見た目はdisplayW, displayH、実解像度はvideoDims.w, videoDims.h）
   useEffect(() => {
     if (!captured) return;
     const ctx = canvasRef.current?.getContext('2d');
@@ -136,14 +162,14 @@ export default function App() {
         ctx.fill();
         ctx.font = '14px Arial';
         ctx.fillStyle = 'blue';
-        ctx.fillText("S"+(i+1), p.x + 8, p.y - 8);
+        ctx.fillText("S" + (i + 1), p.x + 8, p.y - 8);
       });
     }
   }, [points, captured, videoDims.w, videoDims.h, scalePoints]);
 
   return (
-    <div style={{ padding: 20 }}>
-      <h2>動画座標計算アプリ（実長換算・履歴・小マーカー）</h2>
+    <div style={{ padding: 20, background: "#222", minHeight: "100vh", color: "#fff" }}>
+      <h2>動画座標計算アプリ（レスポンシブ実長換算・履歴）</h2>
       <input type="file" accept="video/*" onChange={handleUpload} />
       <div style={{ marginTop: 12, marginBottom: 12 }}>
         フレームレート（fps）:
@@ -164,7 +190,6 @@ export default function App() {
         padding: 12,
         border: "1.5px solid #fff",
         background: "rgba(40,40,40,0.97)",
-        maxWidth: 420,
         borderRadius: 10,
         color: "#fff",
         boxShadow: "0 2px 12px #0005"
@@ -182,7 +207,6 @@ export default function App() {
             <li>その実際の距離を入力し「スケール決定」を押してください</li>
           </ol>
         </div>
-        {/* 以下、スケール入力・選択部は今まで通り */}
         <button
           onClick={() => { setScalePoints([]); setScale(null); setIsSettingScale(true); }}
           style={{ marginTop: 5, marginBottom: 5 }}
@@ -231,15 +255,15 @@ export default function App() {
       <div
         ref={containerRef}
         style={{
-          width: videoDims.w,
-          height: videoDims.h,
-          margin: "0 auto",
+          width: videoDims.w, //等倍優先
+          margin: "32px auto 0",
           position: "relative",
-          background: "#222"
+          background: "#111",
+          borderRadius: "12px"
         }}
       >
         {videoURL && (
-          <div style={{ position: "relative", width: videoDims.w, height: videoDims.h }}>
+          <div style={{ position: "relative", width: "100%", height: displayH, minHeight: 100 }}>
             {/* 動画 */}
             <video
               ref={videoRef}
@@ -247,8 +271,9 @@ export default function App() {
               controls
               style={{
                 display: captured ? "none" : "block",
-                width: videoDims.w,
-                height: videoDims.h,
+                width: "100%",
+                height: "100%",
+                borderRadius: "12px",
                 position: "absolute",
                 left: 0, top: 0, zIndex: 1
               }}
@@ -263,10 +288,12 @@ export default function App() {
                 display: captured ? "block" : "none",
                 position: "absolute",
                 left: 0, top: 0, zIndex: 2,
-                border: "1px solid black",
-                width: videoDims.w,
-                height: videoDims.h,
-                cursor: captured || isSettingScale ? "crosshair" : "not-allowed"
+                border: "1px solid #fff2",
+                width: "100%",
+                height: displayH,
+                borderRadius: "12px",
+                cursor: captured || isSettingScale ? "crosshair" : "not-allowed",
+                background: "transparent"
               }}
               onClick={handleCanvasClick}
             />
@@ -298,7 +325,7 @@ export default function App() {
       {videoURL && (
         <div style={{ marginTop: 20 }}>
           {captured && frameTime !== null &&
-            <div style={{ fontWeight: "bold", color: "#006" }}>
+            <div style={{ fontWeight: "bold", color: "#06e" }}>
               キャプチャ時刻: {Math.round(frameTime * 1000)} ms（{frameTime.toFixed(3)} 秒）
             </div>
           }
@@ -310,7 +337,7 @@ export default function App() {
             <div>
               距離: {distance(points[0], points[1]).toFixed(2)} px
               {scale && (
-                <span style={{marginLeft:8, color:"#08a"}}>
+                <span style={{ marginLeft: 8, color: "#0fa" }}>
                   （{(distance(points[0], points[1]) * scale.value).toFixed(2)} {scale.unit}）
                 </span>
               )}
@@ -328,7 +355,7 @@ export default function App() {
         <ul>
           {distanceHistory.map((d, i) => (
             <li key={i}>No.{i + 1}　{d.toFixed(2)} px
-              {scale && <span style={{marginLeft:8, color:"#08a"}}>
+              {scale && <span style={{ marginLeft: 8, color: "#0fa" }}>
                 （{(d * scale.value).toFixed(2)} {scale.unit}）
               </span>}
               <button style={{ marginLeft: 10 }} onClick={() => removeDistanceAt(i)}>削除</button>
@@ -352,7 +379,7 @@ export default function App() {
         <button onClick={() => setAngleHistory([])}>全てリセット</button>
       </div>
 
-      <div style={{ marginTop: 30, fontSize: 12, color: '#555' }}>
+      <div style={{ marginTop: 30, fontSize: 12, color: '#ccc' }}>
         <div>使い方：</div>
         <ol>
           <li>動画ファイル（mp4等）をアップロード</li>
@@ -364,6 +391,7 @@ export default function App() {
           <li>距離はスケール設定後「実長（cm, m等）」でも表示されます</li>
           <li>「削除」ボタンで1行ずつ履歴削除・「全てリセット」で全消去</li>
           <li>「動画に戻る」ボタンでまた動画再生へ</li>
+          <li><b>ウィンドウ幅に応じて動画も自動リサイズ！</b></li>
         </ol>
       </div>
     </div>
