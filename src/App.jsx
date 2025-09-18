@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 
 function distance(p1, p2) {
   return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
@@ -26,32 +26,13 @@ export default function App() {
   const [distanceHistory, setDistanceHistory] = useState([]);
   const [angleHistory, setAngleHistory] = useState([]);
 
-  // 実長換算（スケール設定）用
-  const [scale, setScale] = useState(null); // {value, unit}
+  // スケール設定用
+  const [scale, setScale] = useState(null);
   const [scalePoints, setScalePoints] = useState([]);
   const [scaleInput, setScaleInput] = useState("");
   const [isSettingScale, setIsSettingScale] = useState(false);
 
-  // 表示上の幅を取得（レスポンシブ用）
-  const [displayW, setDisplayW] = useState(1920);
-  const [displayH, setDisplayH] = useState(1080);
-
-  // 表示サイズをウィンドウ幅に合わせて更新
-  const updateDisplaySize = () => {
-    if (!containerRef.current) return;
-    const w = containerRef.current.offsetWidth;
-    const aspect = videoDims.w / videoDims.h;
-    setDisplayW(w);
-    setDisplayH(Math.round(w / aspect));
-  };
-
-  useEffect(() => {
-    updateDisplaySize();
-    window.addEventListener("resize", updateDisplaySize);
-    return () => window.removeEventListener("resize", updateDisplaySize);
-  }, [videoDims.w, videoDims.h]);
-
-  const handleUpload = e => {
+  const handleUpload = useCallback(e => {
     setVideoURL(URL.createObjectURL(e.target.files[0]));
     setPoints([]);
     setCaptured(false);
@@ -59,28 +40,159 @@ export default function App() {
     setScale(null);
     setScalePoints([]);
     setIsSettingScale(false);
-  };
+  }, []);
 
   const handleLoadedMetadata = () => {
     const video = videoRef.current;
     if (video?.videoWidth && video?.videoHeight) {
       setVideoDims({ w: video.videoWidth, h: video.videoHeight });
-      setTimeout(updateDisplaySize, 200);
+      
+      // まずメタデータからfpsを取得を試行
+      tryGetFPSFromMetadata(video);
+      
+      // メタデータで取得できない場合はフレーム比較で検出
+      setTimeout(() => {
+        if (fps === 30) { // デフォルト値のままなら検出を実行
+          detectVideoFPS(video);
+        }
+      }, 1000);
     }
   };
 
-  const stepFrame = (direction) => {
+  // メタデータからfpsを取得
+  const tryGetFPSFromMetadata = useCallback((video) => {
+    try {
+      if (video.duration && video.duration > 0) {
+        const startTime = 0;
+        const endTime = Math.min(video.duration, 1);
+        
+        video.currentTime = startTime;
+        video.addEventListener('seeked', async () => {
+          const startImage = await captureFrame(video);
+          
+          video.currentTime = endTime;
+          video.addEventListener('seeked', async () => {
+            const endImage = await captureFrame(video);
+            
+            if (startImage && endImage && !imagesEqual(startImage, endImage)) {
+              const estimatedFPS = 1 / (endTime - startTime);
+              
+              const commonFPS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 59.97, 60, 120];
+              const closestFPS = commonFPS.reduce((prev, curr) => 
+                Math.abs(curr - estimatedFPS) < Math.abs(prev - estimatedFPS) ? curr : prev
+              );
+              
+              if (Math.abs(closestFPS - estimatedFPS) < 1) {
+                setFps(closestFPS);
+              }
+            }
+          }, { once: true });
+        }, { once: true });
+      }
+    } catch (error) {
+      console.error('メタデータからのfps取得に失敗:', error);
+    }
+  }, []);
+
+  // 動画の実際のフレームレートを検出
+  const detectVideoFPS = useCallback(async (video) => {
+    try {
+      // 複数の時間点でフレームをサンプリング
+      const samplePoints = [0, 0.1, 0.2, 0.3, 0.4, 0.5];
+      const frameTimes = [];
+      const frameImages = [];
+      
+      // 各サンプルポイントでフレームを取得
+      for (let i = 0; i < samplePoints.length; i++) {
+        video.currentTime = samplePoints[i];
+        await new Promise(resolve => {
+          video.addEventListener('seeked', resolve, { once: true });
+        });
+        
+        const actualTime = video.currentTime;
+        const image = await captureFrame(video);
+        
+        frameTimes.push(actualTime);
+        frameImages.push(image);
+      }
+      
+      // フレームが変わった時間間隔を計算
+      const frameIntervals = [];
+      for (let i = 1; i < frameImages.length; i++) {
+        if (!imagesEqual(frameImages[i-1], frameImages[i])) {
+          const interval = frameTimes[i] - frameTimes[i-1];
+          frameIntervals.push(interval);
+        }
+      }
+      
+      if (frameIntervals.length === 0) {
+        return;
+      }
+      
+      // 平均フレーム間隔を計算
+      const avgInterval = frameIntervals.reduce((sum, interval) => sum + interval, 0) / frameIntervals.length;
+      const detectedFPS = 1 / avgInterval;
+      
+      // 一般的なfps値に最も近い値に丸める
+      const commonFPS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 59.97, 60, 120];
+      const closestFPS = commonFPS.reduce((prev, curr) => 
+        Math.abs(curr - detectedFPS) < Math.abs(prev - detectedFPS) ? curr : prev
+      );
+      
+      setFps(closestFPS);
+      
+    } catch (error) {
+      console.error('fps検出に失敗:', error);
+    }
+  }, []);
+
+  // フレームをキャプチャ
+  const captureFrame = useCallback((video) => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      resolve(imageData);
+    });
+  }, []);
+
+  // 画像データが等しいかチェック
+  const imagesEqual = useCallback((img1, img2) => {
+    if (!img1 || !img2) return false;
+    if (img1.data.length !== img2.data.length) return false;
+    
+    const sampleSize = Math.min(1000, img1.data.length);
+    for (let i = 0; i < sampleSize; i += 4) {
+      if (img1.data[i] !== img2.data[i] || 
+          img1.data[i+1] !== img2.data[i+1] || 
+          img1.data[i+2] !== img2.data[i+2]) {
+        return false;
+      }
+    }
+    return true;
+  }, []);
+
+  const stepFrame = useCallback((direction) => {
     const video = videoRef.current;
     if (!video || isNaN(fps) || fps <= 0) return;
-    const dt = 1 / fps;
-    let newTime = video.currentTime + (direction === "forward" ? dt : -dt);
+
+    const currentTime = video.currentTime;
+    const currentFrame = Math.round(currentTime * fps);
+    const nextFrame = direction === "forward" ? currentFrame + 1 : currentFrame - 1;
+    let newTime = nextFrame / fps;
+
+    // 範囲チェック
     if (newTime < 0) newTime = 0;
     if (newTime > video.duration) newTime = video.duration;
-    video.currentTime = newTime;
-    setTimeout(() => { video.pause(); }, 50);
-  };
 
-  const handleCapture = () => {
+    video.currentTime = newTime;
+    setTimeout(() => { video.pause(); }, 100);
+  }, [fps]);
+
+  const handleCapture = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     canvas.width = videoDims.w;
@@ -91,20 +203,13 @@ export default function App() {
     setFrameTime(video.currentTime);
     setScalePoints([]);
     setIsSettingScale(false);
-  };
+  }, [videoDims.w, videoDims.h]);
 
-  // 距離・角度履歴・スケール設定に対応
-  const handleCanvasClick = e => {
+  const handleCanvasClick = useCallback(e => {
     if (!captured) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    // 表示上の座標
-    const dispX = e.clientX - rect.left;
-    const dispY = e.clientY - rect.top;
-    // 表示サイズ→実ピクセルに換算
-    const scaleX = videoDims.w / displayW;
-    const scaleY = videoDims.h / displayH;
-    const x = dispX * scaleX;
-    const y = dispY * scaleY;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
     if (isSettingScale) {
       if (scalePoints.length < 2) {
@@ -128,17 +233,123 @@ export default function App() {
       const ang = angle(newPoints[0], newPoints[1], newPoints[2]);
       setAngleHistory(hist => [...hist, ang]);
     }
-  };
+  }, [captured, isSettingScale, scalePoints.length, points]);
 
-  // 1行だけ削除
-  const removeDistanceAt = idx => {
+  const removeDistanceAt = useCallback(idx => {
     setDistanceHistory(history => history.filter((_, i) => i !== idx));
-  };
-  const removeAngleAt = idx => {
+  }, []);
+  
+  const removeAngleAt = useCallback(idx => {
     setAngleHistory(history => history.filter((_, i) => i !== idx));
-  };
+  }, []);
 
-  // 描画（見た目はdisplayW, displayH、実解像度はvideoDims.w, videoDims.h）
+  // エクスポート機能
+  const exportToCSV = useCallback(() => {
+    const csvData = [];
+    csvData.push(['測定タイプ', '値', '単位', '実長換算値', '実長単位', '測定時刻']);
+    
+    distanceHistory.forEach((distance, i) => {
+      const realValue = scale ? (distance * scale.value).toFixed(2) : '';
+      const realUnit = scale ? scale.unit : '';
+      csvData.push([
+        '距離',
+        distance.toFixed(2),
+        'px',
+        realValue,
+        realUnit,
+        frameTime ? `${frameTime.toFixed(3)}秒` : '不明'
+      ]);
+    });
+    
+    angleHistory.forEach((angle, i) => {
+      csvData.push([
+        '角度',
+        angle,
+        '度',
+        '',
+        '',
+        frameTime ? `${frameTime.toFixed(3)}秒` : '不明'
+      ]);
+    });
+    
+    const csvContent = csvData.map(row => row.join(',')).join('\n');
+    downloadFile(csvContent, 'measurements.csv', 'text/csv');
+  }, [distanceHistory, angleHistory, scale, frameTime]);
+
+  const exportToJSON = useCallback(() => {
+    const jsonData = {
+      metadata: {
+        videoDimensions: videoDims,
+        frameTime: frameTime,
+        fps: fps,
+        scale: scale,
+        zoomLevel: zoomLevel,
+        zoomCenter: zoomCenter,
+        exportDate: new Date().toISOString()
+      },
+      measurements: {
+        distances: distanceHistory.map((distance, i) => ({
+          id: i + 1,
+          value: distance,
+          unit: 'px',
+          realValue: scale ? distance * scale.value : null,
+          realUnit: scale ? scale.unit : null
+        })),
+        angles: angleHistory.map((angle, i) => ({
+          id: i + 1,
+          value: parseFloat(angle),
+          unit: '度'
+        }))
+      }
+    };
+    
+    downloadFile(JSON.stringify(jsonData, null, 2), 'measurements.json', 'application/json');
+  }, [videoDims, frameTime, fps, scale, distanceHistory, angleHistory]);
+
+  const exportAllData = useCallback(() => {
+    const allData = {
+      metadata: {
+        videoDimensions: videoDims,
+        frameTime: frameTime,
+        fps: fps,
+        scale: scale,
+        zoomLevel: zoomLevel,
+        zoomCenter: zoomCenter,
+        exportDate: new Date().toISOString()
+      },
+      currentPoints: points,
+      measurements: {
+        distances: distanceHistory.map((distance, i) => ({
+          id: i + 1,
+          value: distance,
+          unit: 'px',
+          realValue: scale ? distance * scale.value : null,
+          realUnit: scale ? scale.unit : null
+        })),
+        angles: angleHistory.map((angle, i) => ({
+          id: i + 1,
+          value: parseFloat(angle),
+          unit: '度'
+        }))
+      }
+    };
+    
+    downloadFile(JSON.stringify(allData, null, 2), 'all_data.json', 'application/json');
+  }, [videoDims, frameTime, fps, scale, distanceHistory, angleHistory, points, scalePoints]);
+
+  const downloadFile = useCallback((content, filename, mimeType) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // 描画
   useEffect(() => {
     if (!captured) return;
     const ctx = canvasRef.current?.getContext('2d');
@@ -148,21 +359,30 @@ export default function App() {
       // 通常マーク
       points.forEach((p, i) => {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 4, 0, 2 * Math.PI);
+        ctx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
         ctx.fillStyle = 'red';
         ctx.fill();
-        ctx.font = '16px Arial';
-        ctx.fillText(i + 1, p.x + 8, p.y - 8);
+        // 白い縁を追加
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = '18px Arial';
+        ctx.fillStyle = 'white';
+        ctx.fillText(i + 1, p.x + 12, p.y - 12);
       });
       // スケール設定用マーク
       scalePoints.forEach((p, i) => {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
+        ctx.arc(p.x, p.y, 10, 0, 2 * Math.PI);
         ctx.fillStyle = 'blue';
         ctx.fill();
-        ctx.font = '14px Arial';
-        ctx.fillStyle = 'blue';
-        ctx.fillText("S" + (i + 1), p.x + 8, p.y - 8);
+        // 白い縁を追加
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = '16px Arial';
+        ctx.fillStyle = 'white';
+        ctx.fillText("S" + (i + 1), p.x + 12, p.y - 12);
       });
     }
   }, [points, captured, videoDims.w, videoDims.h, scalePoints]);
@@ -185,12 +405,64 @@ export default function App() {
           type="number"
           min="1"
           max="120"
-          step="0.01"
+          step="0.001"
           value={fps}
           onChange={e => setFps(Number(e.target.value))}
-          style={{ width: 60, marginLeft: 6 }}
-        />（動画のfpsがわかれば入力してください）
+          style={{ width: 80, marginLeft: 6 }}
+        />
+        <button
+          onClick={() => {
+            if (videoRef.current) {
+              detectVideoFPS(videoRef.current);
+            }
+          }}
+          style={{ 
+            marginLeft: 8, 
+            padding: "4px 8px",
+            background: "#4CAF50",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer"
+          }}
+        >
+          自動検出
+        </button>
+        <button
+          onClick={() => setFps(59.97)}
+          style={{ 
+            marginLeft: 4, 
+            padding: "4px 8px",
+            background: "#2196F3",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+            fontSize: "12px"
+          }}
+        >
+          59.97
+        </button>
+        <button
+          onClick={() => setFps(29.97)}
+          style={{ 
+            marginLeft: 4, 
+            padding: "4px 8px",
+            background: "#2196F3",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+            fontSize: "12px"
+          }}
+        >
+          29.97
+        </button>
+        <div style={{ marginTop: 4, fontSize: "12px", color: "#666" }}>
+          現在のfps: {fps} | 動画のfpsがわかれば入力してください（例：59.97）
+        </div>
       </div>
+
 
       {/* --- スケール（実長換算）設定 --- */}
       <div style={{
@@ -274,24 +546,26 @@ export default function App() {
         {videoURL && (
           <div style={{ 
             position: "relative", 
-            width: "100%", 
-            height: displayH, 
-            minHeight: 200,
-            aspectRatio: `${videoDims.w} / ${videoDims.h}` // アスペクト比を維持
+            width: videoDims.w, // オリジナルサイズで表示
+            height: videoDims.h, // オリジナルサイズで表示
+            margin: "0 auto", // 中央揃え
+            background: "#000"
           }}>
             {/* 動画 */}
             <video
               ref={videoRef}
               src={videoURL}
               controls
+              preload="metadata"
               style={{
                 display: captured ? "none" : "block",
-                width: "100%",
-                height: "100%",
-                objectFit: "contain", // アスペクト比を維持してフィット
-                borderRadius: "12px",
+                width: videoDims.w,
+                height: videoDims.h,
                 position: "absolute",
-                left: 0, top: 0, zIndex: 1
+                left: 0,
+                top: 0,
+                zIndex: 1,
+                pointerEvents: "auto"
               }}
               onLoadedMetadata={handleLoadedMetadata}
             />
@@ -303,14 +577,15 @@ export default function App() {
               style={{
                 display: captured ? "block" : "none",
                 position: "absolute",
-                left: 0, top: 0, zIndex: 2,
+                left: 0,
+                top: 0,
+                width: videoDims.w,
+                height: videoDims.h,
                 border: "1px solid #fff2",
-                width: "100%",
-                height: "100%",
-                objectFit: "contain", // アスペクト比を維持してフィット
-                borderRadius: "12px",
                 cursor: captured || isSettingScale ? "crosshair" : "not-allowed",
-                background: "transparent"
+                background: "transparent",
+                zIndex: 2,
+                pointerEvents: captured ? "auto" : "none"
               }}
               onClick={handleCanvasClick}
             />
@@ -394,6 +669,52 @@ export default function App() {
           ))}
         </ul>
         <button onClick={() => setAngleHistory([])}>全てリセット</button>
+      </div>
+
+      {/* --- エクスポート機能 --- */}
+      <div style={{ marginTop: 30 }}>
+        <strong>データエクスポート：</strong>
+        <div style={{ marginTop: 10, display: "flex", gap: "10px", flexWrap: "wrap" }}>
+          <button
+            onClick={() => exportToCSV()}
+            style={{
+              padding: "8px 16px",
+              background: "#4CAF50",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}
+          >
+            CSVでエクスポート
+          </button>
+          <button
+            onClick={() => exportToJSON()}
+            style={{
+              padding: "8px 16px",
+              background: "#2196F3",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}
+          >
+            JSONでエクスポート
+          </button>
+          <button
+            onClick={() => exportAllData()}
+            style={{
+              padding: "8px 16px",
+              background: "#FF9800",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}
+          >
+            全データエクスポート
+          </button>
+        </div>
       </div>
 
       <div style={{ marginTop: 30, fontSize: 12, color: '#ccc' }}>
