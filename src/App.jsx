@@ -168,7 +168,15 @@ export default function App() {
   }, [points, captured, videoDims.w, videoDims.h, scalePoints]);
 
   return (
-    <div style={{ padding: 20, background: "#222", minHeight: "100vh", color: "#fff" }}>
+    <div style={{ 
+      padding: "20px", 
+      background: "#222", 
+      minHeight: "100vh", 
+      color: "#fff",
+      maxWidth: "1400px",
+      margin: "0 auto",
+      boxSizing: "border-box"
+    }}>
       <h2>動画座標計算アプリ（レスポンシブ実長換算・履歴）</h2>
       <input type="file" accept="video/*" onChange={handleUpload} />
       <div style={{ marginTop: 12, marginBottom: 12 }}>
@@ -255,7 +263,8 @@ export default function App() {
       <div
         ref={containerRef}
         style={{
-          width: videoDims.w, //等倍優先
+          width: "100%",
+          maxWidth: "1200px", // 最大幅を設定
           margin: "32px auto 0",
           position: "relative",
           background: "#111",
@@ -263,7 +272,13 @@ export default function App() {
         }}
       >
         {videoURL && (
-          <div style={{ position: "relative", width: "100%", height: displayH, minHeight: 100 }}>
+          <div style={{ 
+            position: "relative", 
+            width: "100%", 
+            height: displayH, 
+            minHeight: 200,
+            aspectRatio: `${videoDims.w} / ${videoDims.h}` // アスペクト比を維持
+          }}>
             {/* 動画 */}
             <video
               ref={videoRef}
@@ -273,6 +288,7 @@ export default function App() {
                 display: captured ? "none" : "block",
                 width: "100%",
                 height: "100%",
+                objectFit: "contain", // アスペクト比を維持してフィット
                 borderRadius: "12px",
                 position: "absolute",
                 left: 0, top: 0, zIndex: 1
@@ -290,7 +306,8 @@ export default function App() {
                 left: 0, top: 0, zIndex: 2,
                 border: "1px solid #fff2",
                 width: "100%",
-                height: displayH,
+                height: "100%",
+                objectFit: "contain", // アスペクト比を維持してフィット
                 borderRadius: "12px",
                 cursor: captured || isSettingScale ? "crosshair" : "not-allowed",
                 background: "transparent"
