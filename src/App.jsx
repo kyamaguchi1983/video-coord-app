@@ -13,15 +13,14 @@ function angle(p1, p2, p3) {
   return (rad * 180 / Math.PI).toFixed(2);
 }
 
+
 export default function App() {
   const videoRef = useRef();
   const canvasRef = useRef();
   const containerRef = useRef();
   const [videoURL, setVideoURL] = useState(null);
   const [points, setPoints] = useState([]);
-  const [captured, setCaptured] = useState(false);
   const [videoDims, setVideoDims] = useState({ w: 1920, h: 1080 });
-  const [frameTime, setFrameTime] = useState(null);
   const [fps, setFps] = useState(30);
   const [distanceHistory, setDistanceHistory] = useState([]);
   const [angleHistory, setAngleHistory] = useState([]);
@@ -31,15 +30,17 @@ export default function App() {
   const [scalePoints, setScalePoints] = useState([]);
   const [scaleInput, setScaleInput] = useState("");
   const [isSettingScale, setIsSettingScale] = useState(false);
+  
+  // 座標取得モード
+  const [isCoordinateMode, setIsCoordinateMode] = useState(false);
 
   const handleUpload = useCallback(e => {
     setVideoURL(URL.createObjectURL(e.target.files[0]));
     setPoints([]);
-    setCaptured(false);
-    setFrameTime(null);
     setScale(null);
     setScalePoints([]);
     setIsSettingScale(false);
+    setIsCoordinateMode(false);
   }, []);
 
   const handleLoadedMetadata = () => {
@@ -189,40 +190,49 @@ export default function App() {
     if (newTime > video.duration) newTime = video.duration;
 
     video.currentTime = newTime;
+    
+    // 座標取得モード時は点を自動リセット
+    if (isCoordinateMode) {
+      setPoints([]);
+    }
+    
     setTimeout(() => { video.pause(); }, 100);
-  }, [fps]);
+  }, [fps, isCoordinateMode]);
 
-  const handleCapture = useCallback(() => {
+
+  // 動画上でのクリックハンドラー
+  const handleVideoClick = useCallback(e => {
+    if (!isCoordinateMode) return;
+    
+    // 座標取得モード時は動画の再生/停止を防ぐ
+    e.preventDefault();
+    e.stopPropagation();
+    
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = videoDims.w;
-    canvas.height = videoDims.h;
-    canvas.getContext('2d').drawImage(video, 0, 0, videoDims.w, videoDims.h);
-    setPoints([]);
-    setCaptured(true);
-    setFrameTime(video.currentTime);
-    setScalePoints([]);
-    setIsSettingScale(false);
-  }, [videoDims.w, videoDims.h]);
-
-  const handleCanvasClick = useCallback(e => {
-    if (!captured) return;
-    const rect = canvasRef.current.getBoundingClientRect();
+    const rect = video.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-
+    
+    // 動画の実際のサイズに合わせて座標を調整
+    const scaleX = videoDims.w / rect.width;
+    const scaleY = videoDims.h / rect.height;
+    const adjustedX = x * scaleX;
+    const adjustedY = y * scaleY;
+    
+    // スケール設定モード時の処理
     if (isSettingScale) {
       if (scalePoints.length < 2) {
         setScalePoints(ps => {
-          const newPs = [...ps, { x, y }];
+          const newPs = [...ps, { x: adjustedX, y: adjustedY }];
           if (newPs.length === 2) setIsSettingScale(false);
           return newPs;
         });
       }
       return;
     }
-
-    const newPoints = [...points, { x, y }];
+    
+    // 通常の座標取得モード時の処理
+    const newPoints = [...points, { x: adjustedX, y: adjustedY }];
     setPoints(newPoints);
 
     if (newPoints.length === 2) {
@@ -233,7 +243,8 @@ export default function App() {
       const ang = angle(newPoints[0], newPoints[1], newPoints[2]);
       setAngleHistory(hist => [...hist, ang]);
     }
-  }, [captured, isSettingScale, scalePoints.length, points]);
+  }, [isCoordinateMode, isSettingScale, scalePoints.length, points, videoDims.w, videoDims.h]);
+
 
   const removeDistanceAt = useCallback(idx => {
     setDistanceHistory(history => history.filter((_, i) => i !== idx));
@@ -257,7 +268,7 @@ export default function App() {
         'px',
         realValue,
         realUnit,
-        frameTime ? `${frameTime.toFixed(3)}秒` : '不明'
+        videoRef.current?.currentTime ? `${videoRef.current.currentTime.toFixed(3)}秒` : '不明'
       ]);
     });
     
@@ -268,19 +279,19 @@ export default function App() {
         '度',
         '',
         '',
-        frameTime ? `${frameTime.toFixed(3)}秒` : '不明'
+        videoRef.current?.currentTime ? `${videoRef.current.currentTime.toFixed(3)}秒` : '不明'
       ]);
     });
     
     const csvContent = csvData.map(row => row.join(',')).join('\n');
     downloadFile(csvContent, 'measurements.csv', 'text/csv');
-  }, [distanceHistory, angleHistory, scale, frameTime]);
+  }, [distanceHistory, angleHistory, scale]);
 
   const exportToJSON = useCallback(() => {
     const jsonData = {
       metadata: {
         videoDimensions: videoDims,
-        frameTime: frameTime,
+        currentTime: videoRef.current?.currentTime || 0,
         fps: fps,
         scale: scale,
         zoomLevel: zoomLevel,
@@ -304,13 +315,13 @@ export default function App() {
     };
     
     downloadFile(JSON.stringify(jsonData, null, 2), 'measurements.json', 'application/json');
-  }, [videoDims, frameTime, fps, scale, distanceHistory, angleHistory]);
+  }, [videoDims, fps, scale, distanceHistory, angleHistory]);
 
   const exportAllData = useCallback(() => {
     const allData = {
       metadata: {
         videoDimensions: videoDims,
-        frameTime: frameTime,
+        currentTime: videoRef.current?.currentTime || 0,
         fps: fps,
         scale: scale,
         zoomLevel: zoomLevel,
@@ -335,7 +346,7 @@ export default function App() {
     };
     
     downloadFile(JSON.stringify(allData, null, 2), 'all_data.json', 'application/json');
-  }, [videoDims, frameTime, fps, scale, distanceHistory, angleHistory, points, scalePoints]);
+  }, [videoDims, fps, scale, distanceHistory, angleHistory, points, scalePoints]);
 
   const downloadFile = useCallback((content, filename, mimeType) => {
     const blob = new Blob([content], { type: mimeType });
@@ -349,13 +360,12 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, []);
 
-  // 描画
+  // 描画（座標取得モード時のみ）
   useEffect(() => {
-    if (!captured) return;
+    if (!isCoordinateMode) return;
     const ctx = canvasRef.current?.getContext('2d');
     if (ctx) {
       ctx.clearRect(0, 0, videoDims.w, videoDims.h);
-      ctx.drawImage(videoRef.current, 0, 0, videoDims.w, videoDims.h);
       // 通常マーク
       points.forEach((p, i) => {
         ctx.beginPath();
@@ -385,7 +395,7 @@ export default function App() {
         ctx.fillText("S" + (i + 1), p.x + 12, p.y - 12);
       });
     }
-  }, [points, captured, videoDims.w, videoDims.h, scalePoints]);
+  }, [points, isCoordinateMode, videoDims.w, videoDims.h, scalePoints]);
 
   return (
     <div style={{ 
@@ -483,12 +493,18 @@ export default function App() {
         }}>
           <strong>スケール設定（実長換算）</strong>
           <ol style={{ margin: 0, paddingLeft: 18 }}>
-            <li>「スケール設定モード」にして動画上で基準2点をクリック</li>
+            <li>「スケール設定モード」をクリック（自動的に座標取得モードに切り替わります）</li>
+            <li>動画上で基準2点をクリック</li>
             <li>その実際の距離を入力し「スケール決定」を押してください</li>
           </ol>
         </div>
         <button
-          onClick={() => { setScalePoints([]); setScale(null); setIsSettingScale(true); }}
+          onClick={() => { 
+            setScalePoints([]); 
+            setScale(null); 
+            setIsSettingScale(true);
+            setIsCoordinateMode(true);
+          }}
           style={{ marginTop: 5, marginBottom: 5 }}
         >スケール設定モード</button>
         {scalePoints.length === 2 &&
@@ -531,6 +547,7 @@ export default function App() {
         {isSettingScale && <div style={{ color: "skyblue", marginTop: 8 }}>→ 動画上で2点クリックしてください</div>}
       </div>
 
+
       {/* --- 動画＆canvas --- */}
       <div
         ref={containerRef}
@@ -555,72 +572,111 @@ export default function App() {
             <video
               ref={videoRef}
               src={videoURL}
-              controls
+              controls={!isCoordinateMode}
               preload="metadata"
               style={{
-                display: captured ? "none" : "block",
+                display: "block",
                 width: videoDims.w,
                 height: videoDims.h,
                 position: "absolute",
                 left: 0,
                 top: 0,
                 zIndex: 1,
-                pointerEvents: "auto"
+                pointerEvents: isCoordinateMode ? "none" : "auto",
+                cursor: isCoordinateMode ? "crosshair" : "default"
               }}
               onLoadedMetadata={handleLoadedMetadata}
             />
-            {/* キャプチャ静止画（Canvas） */}
-            <canvas
-              ref={canvasRef}
-              width={videoDims.w}
-              height={videoDims.h}
-              style={{
-                display: captured ? "block" : "none",
-                position: "absolute",
-                left: 0,
-                top: 0,
-                width: videoDims.w,
-                height: videoDims.h,
-                border: "1px solid #fff2",
-                cursor: captured || isSettingScale ? "crosshair" : "not-allowed",
-                background: "transparent",
-                zIndex: 2,
-                pointerEvents: captured ? "auto" : "none"
-              }}
-              onClick={handleCanvasClick}
-            />
+            {/* 座標表示用Canvas（座標取得モード時のみ） */}
+            {isCoordinateMode && (
+              <canvas
+                ref={canvasRef}
+                width={videoDims.w}
+                height={videoDims.h}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  width: videoDims.w,
+                  height: videoDims.h,
+                  background: "transparent",
+                  zIndex: 2,
+                  pointerEvents: "none"
+                }}
+              />
+            )}
+            {/* 座標取得モード時のオーバーレイ */}
+            {isCoordinateMode && (
+              <div
+                onClick={handleVideoClick}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  width: videoDims.w,
+                  height: videoDims.h,
+                  background: "transparent",
+                  zIndex: 3,
+                  pointerEvents: "auto",
+                  cursor: "crosshair"
+                }}
+              />
+            )}
           </div>
         )}
       </div>
-      {videoURL && !captured && (
+      {videoURL && (
         <div style={{ marginTop: 12 }}>
           <button onClick={() => stepFrame("back")}>◀︎ 1フレーム戻る</button>
           <button onClick={() => stepFrame("forward")} style={{ marginLeft: 12 }}>1フレーム進む ▶︎</button>
+          <button 
+            onClick={() => setIsCoordinateMode(!isCoordinateMode)}
+            style={{ 
+              marginLeft: 12,
+              background: isCoordinateMode ? "#4CAF50" : "#666",
+              color: "white",
+              border: "none",
+              padding: "6px 12px",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}
+          >
+            {isCoordinateMode ? "座標取得モード ON" : "座標取得モード OFF"}
+          </button>
+          {isCoordinateMode && (
+            <div style={{ marginTop: 8, fontSize: "12px", color: "#4CAF50" }}>
+              {isSettingScale ? (
+                <>
+                  → スケール設定モード：動画上で基準2点をクリックしてください<br />
+                  → 2点目をクリックすると自動的にスケール設定完了
+                </>
+              ) : (
+                <>
+                  → 動画上でクリックして座標を取得できます（動画は停止状態）<br />
+                  → 1フレーム進むと点は自動でリセットされます
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
       {videoURL && (
         <div style={{ marginTop: 12 }}>
-          <button onClick={handleCapture} style={{ marginRight: 10 }} disabled={captured}>
-            静止画キャプチャ
-          </button>
           <button onClick={() => { setPoints([]); }} style={{ marginRight: 10 }}>
             点リセット
           </button>
           <button onClick={() => {
-            setCaptured(false); setPoints([]); setFrameTime(null);
-            setScalePoints([]); setIsSettingScale(false);
+            setPoints([]);
+            setScalePoints([]); 
+            setIsSettingScale(false);
+            setIsCoordinateMode(false);
           }}>
-            動画に戻る
+            リセット
           </button>
         </div>
       )}
       {videoURL && (
         <div style={{ marginTop: 20 }}>
-          {captured && frameTime !== null &&
-            <div style={{ fontWeight: "bold", color: "#06e" }}>
-              キャプチャ時刻: {Math.round(frameTime * 1000)} ms（{frameTime.toFixed(3)} 秒）
-            </div>
-          }
           <strong>取得座標:</strong>
           {points.map((p, i) => (
             <div key={i}>点{i + 1}: ({points[i].x.toFixed(0)}, {points[i].y.toFixed(0)})</div>
